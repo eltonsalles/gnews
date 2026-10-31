@@ -1,33 +1,44 @@
-name: AI Code Review
+name: AI Security Review
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, reopened, synchronize]
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   review:
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write # Necessário para comentar no PR
+      pull-requests: write
     steps:
-      - name: Checkout Repo
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: AI Reviewer
-        uses: anc95/ChatGPT-CodeReview@main # Action que orquestra a revisão
+      - name: Gemini Security Review
+        uses: anc95/ChatGPT-CodeReview@v1.0.24
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.AI_API_KEY }} # Funciona com Gemini via proxy ou OpenAI nativo
+          OPENAI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENAI_API_ENDPOINT: https://generativelanguage.googleapis.com/v1beta/openai
+          MODEL: gemini-2.5-pro
           LANGUAGE: Portuguese
-          MODEL: gemini-2.0-flash # Ajuste para o modelo configurado
+          temperature: 0.1
+          MAX_PATCH_LENGTH: 20000
+          INCLUDE_PATTERNS: "*.java,pom.xml,*.properties,*.yml,*.yaml"
+          IGNORE_PATTERNS: ".github/**,*.md"
           PROMPT: |
-            Aja como um Engenheiro de Segurança Sênior (DevSecOps). 
-            Analise o DIFF deste Pull Request buscando:
-            1. Vulnerabilidades OWASP Top 10 (especialmente SQL Injection e Insecure Deserialization).
-            2. Code Smells e complexidade ciclomática desnecessária.
-            3. Aderência às melhores práticas de Java 25 e Spring Boot 3.4.
-            4. Responda em Português com comentários técnicos e construtivos diretamente nas linhas do código afetado.
+            Você é um Engenheiro de Segurança de Aplicações (AppSec) revisando um PR
+            de uma API Java 25 / Spring Boot 3.5 que usa spring-boot-starter-jdbc.
+            Analise APENAS o diff abaixo e procure vulnerabilidades, priorizando:
+            - SQL Injection (concatenação de strings em JdbcTemplate/queries nativas)
+            - Falhas de validação de entrada (falta de @Valid, Bean Validation)
+            - Exposição de dados sensíveis (secrets hardcoded, logs com dados pessoais/tokens)
+            - SSRF ao chamar APIs externas com URLs controladas pelo usuário
+            - Desserialização insegura, path traversal, CORS/headers permissivos
+            - Dependências vulneráveis adicionadas no pom.xml
+            Para cada achado informe: severidade (Crítica/Alta/Média/Baixa), CWE,
+            trecho afetado, explicação do risco e correção sugerida em código.
+            Se não houver vulnerabilidades, responda apenas "Nenhuma vulnerabilidade
+            identificada". Não comente estilo ou formatação.
