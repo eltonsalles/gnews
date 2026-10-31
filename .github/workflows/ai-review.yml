@@ -1,11 +1,11 @@
-name: AI Security Review
+name: Cursor Security Review
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize]
+    types: [opened, synchronize, ready_for_review]
 
 concurrency:
-  group: ai-review-${{ github.event.pull_request.number }}
+  group: cursor-review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -16,29 +16,43 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - name: Gemini Security Review
-        uses: anc95/ChatGPT-CodeReview@v1.0.24
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Cursor CLI
+        run: |
+          curl https://cursor.com/install -fsS | bash
+          echo "$HOME/.cursor/bin" >> $GITHUB_PATH
+
+      - name: Generate PR diff
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          OPENAI_API_ENDPOINT: https://generativelanguage.googleapis.com/v1beta/openai
-          MODEL: gemini-3.6-flash
-          LANGUAGE: Portuguese
-          temperature: 0.1
-          MAX_PATCH_LENGTH: 20000
-          INCLUDE_PATTERNS: "*.java,pom.xml,*.properties,*.yml,*.yaml"
-          IGNORE_PATTERNS: ".github/**,*.md"
-          PROMPT: |
-            Você é um Engenheiro de Segurança de Aplicações (AppSec) revisando um PR
-            de uma API Java 25 / Spring Boot 3.5 que usa spring-boot-starter-jdbc.
-            Analise APENAS o diff abaixo e procure vulnerabilidades, priorizando:
-            - SQL Injection (concatenação de strings em JdbcTemplate/queries nativas)
-            - Falhas de validação de entrada (falta de @Valid, Bean Validation)
-            - Exposição de dados sensíveis (secrets hardcoded, logs com dados pessoais/tokens)
-            - SSRF ao chamar APIs externas com URLs controladas pelo usuário
-            - Desserialização insegura, path traversal, CORS/headers permissivos
-            - Dependências vulneráveis adicionadas no pom.xml
-            Para cada achado informe: severidade (Crítica/Alta/Média/Baixa), CWE,
-            trecho afetado, explicação do risco e correção sugerida em código.
-            Se não houver vulnerabilidades, responda apenas "Nenhuma vulnerabilidade
-            identificada". Não comente estilo ou formatação.
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git diff "origin/$BASE_REF...HEAD" -- '*.java' pom.xml '*.yml' '*.properties' '*.sql' \
+            ':!.github/**' > pr.diff
+
+      - name: Security review
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          CURSOR_MODEL: gemini-4-argon-medium
+        run: |
+          agent -p "Você é um Engenheiro de Segurança de Aplicações (AppSec) revisando um PR
+          de uma API Java 25 / Spring Boot 3.5 que usa spring-boot-starter-jdbc.
+          Leia o arquivo pr.diff e, se precisar de contexto, os arquivos completos do repositório.
+          Procure vulnerabilidades, priorizando: SQL Injection (concatenação em JdbcTemplate),
+          validação de entrada, exposição de dados sensíveis, SSRF, desserialização insegura,
+          path traversal, CORS permissivo e dependências vulneráveis no pom.xml.
+          Para cada achado informe severidade, CWE, arquivo e linha, risco e correção sugerida.
+          Se não houver vulnerabilidades, responda apenas 'Nenhuma vulnerabilidade identificada'.
+          Não modifique arquivos e não execute git nem gh. Responda em Markdown, em português." \
+            --model "$CURSOR_MODEL" \
+            --mode ask \
+            --trust \
+            --output-format text > review.md
+
+      - name: Comment on PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh pr comment "$PR_NUMBER" --body-file review.md
